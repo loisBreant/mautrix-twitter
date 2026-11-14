@@ -985,6 +985,12 @@ func (p *XChatEventProcessor) processInstruction(ctx context.Context, inst *payl
 			Msg("Received SwitchToHybridPullInstruction")
 		return nil
 
+	case inst.MessageRequestInfoInstruction != nil:
+		// Legacy message requests only reach the bridge through REST polling.
+		p.log.Debug().Msg("Message requests changed, polling REST updates now")
+		p.client.polling.doShortCircuit()
+		return nil
+
 	case inst.DisplayTemporaryPasscodeInstruction != nil:
 		p.log.Debug().
 			Bool("has_token", ptr.Val(inst.DisplayTemporaryPasscodeInstruction.Token) != "").

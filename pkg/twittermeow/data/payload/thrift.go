@@ -473,7 +473,11 @@ type MessageInstruction struct {
 	PinReminderInstruction              *PinReminderInstruction              `thrift:"pinReminderInstruction,4" json:"pinReminderInstruction,omitempty"`
 	SwitchToHybridPullInstruction       *SwitchToHybridPullInstruction       `thrift:"switchToHybridPullInstruction,5" json:"switchToHybridPullInstruction,omitempty"`
 	DisplayTemporaryPasscodeInstruction *DisplayTemporaryPasscodeInstruction `thrift:"displayTemporaryPasscodeInstruction,6" json:"displayTemporaryPasscodeInstruction,omitempty"`
+	MessageRequestInfoInstruction       *MessageRequestInfoInstruction       `thrift:"messageRequestInfoInstruction,9" json:"messageRequestInfoInstruction,omitempty"`
 }
+
+// MessageRequestInfoInstruction tells the client that its message requests changed.
+type MessageRequestInfoInstruction struct{}
 
 type MessageReactionAdd struct {
 	MessageSequenceId *string `thrift:"message_sequence_id,1" json:"message_sequence_id,omitempty"`

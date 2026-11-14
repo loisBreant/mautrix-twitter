@@ -3,6 +3,8 @@ package twittermeow
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -13,7 +15,15 @@ import (
 	"go.mau.fi/mautrix-twitter/pkg/twittermeow/data/types"
 )
 
-var defaultPollingInterval = 10 * time.Second
+const (
+	defaultMinPollingInterval = 60 * time.Second
+	defaultMaxPollingInterval = 120 * time.Second
+
+	pollingErrorBackoff        = 30 * time.Second
+	maxPollingErrorBackoff     = 3 * time.Minute
+	pollingRateLimitBackoff    = 2 * time.Minute
+	maxPollingRateLimitBackoff = 15 * time.Minute
+)
 
 // PollingClient handles REST API polling for DM updates.
 // Used primarily for untrusted (message request) conversations
@@ -25,6 +35,8 @@ type PollingClient struct {
 	includeConversationID bool
 	shortCircuit          chan struct{}
 	pollingStopped        *exsync.Event
+	minInterval           time.Duration
+	maxInterval           time.Duration
 }
 
 // newPollingClient creates a new polling client.
@@ -33,9 +45,53 @@ func (c *Client) newPollingClient() *PollingClient {
 		client:         c,
 		shortCircuit:   make(chan struct{}, 1),
 		pollingStopped: exsync.NewEvent(),
+		minInterval:    defaultMinPollingInterval,
+		maxInterval:    defaultMaxPollingInterval,
 	}
 	pc.pollingStopped.Set()
 	return pc
+}
+
+// setInterval sets the range the wait between two polls is drawn from. A minimum
+// of zero or less keeps the default range, and a maximum below the minimum polls
+// at the minimum.
+func (pc *PollingClient) setInterval(minimum, maximum time.Duration) {
+	if minimum <= 0 {
+		pc.minInterval, pc.maxInterval = defaultMinPollingInterval, defaultMaxPollingInterval
+		return
+	}
+	pc.minInterval, pc.maxInterval = minimum, maximum
+}
+
+// nextInterval draws the wait before the next poll, so that polls don't come at
+// a fixed rhythm.
+func (pc *PollingClient) nextInterval() time.Duration {
+	if pc.maxInterval <= pc.minInterval {
+		return pc.minInterval
+	}
+	return pc.minInterval + rand.N(pc.maxInterval-pc.minInterval+1)
+}
+
+// pollingBackoff returns the wait after the given number of consecutive failed
+// polls. A rate limit waits longer, up to the 15 minute window X counts requests in.
+func pollingBackoff(failures int, rateLimited bool) time.Duration {
+	base, ceiling := pollingErrorBackoff, maxPollingErrorBackoff
+	if rateLimited {
+		base, ceiling = pollingRateLimitBackoff, maxPollingRateLimitBackoff
+	}
+	backoff := base
+	for i := 1; i < failures && backoff < ceiling; i++ {
+		backoff *= 2
+	}
+	return min(backoff, ceiling)
+}
+
+// isPollingRateLimited reports whether a poll failed because X rate limited it:
+// error code 88, or HTTP 429 whatever its body says.
+func isPollingRateLimited(err error) bool {
+	var twitterErrs *TwitterErrors
+	return errors.Is(err, ErrRatelimitExceeded) ||
+		errors.As(err, &twitterErrs) && twitterErrs.StatusCode == http.StatusTooManyRequests
 }
 
 func (pc *PollingClient) startPolling(ctx context.Context) {
@@ -55,16 +111,18 @@ func (pc *PollingClient) startPolling(ctx context.Context) {
 }
 
 func (pc *PollingClient) doPoll(ctx context.Context) {
-	tick := time.NewTicker(defaultPollingInterval)
-	defer tick.Stop()
+	timer := time.NewTimer(pc.nextInterval())
+	defer timer.Stop()
 	log := zerolog.Ctx(ctx)
-	var failing bool
-	backoffInterval := defaultPollingInterval / 2
+	failures := 0
 	for {
 		select {
-		case <-tick.C:
+		case <-timer.C:
 		case <-pc.shortCircuit:
-			tick.Reset(defaultPollingInterval)
+			if failures > 0 {
+				// Keep waiting out the backoff: polling now could extend a rate limit.
+				continue
+			}
 		case <-ctx.Done():
 			log.Debug().Err(ctx.Err()).Msg("Polling context canceled")
 			return
@@ -74,24 +132,22 @@ func (pc *PollingClient) doPoll(ctx context.Context) {
 			log.Debug().Err(err).Msg("Polling context canceled during event handling")
 			return
 		} else if err != nil {
-			log.Err(err).Msg("Failed to poll for updates")
 			authError := IsAuthError(err)
 			pc.client.eventHandler(&types.PollingError{Error: err, IsAuth: authError}, nil)
 			if authError {
+				log.Err(err).Msg("Failed to poll for updates")
 				return
 			}
-			failing = true
-			backoffInterval = min(backoffInterval*2, 180*time.Second)
-			if errors.Is(err, ErrRatelimitExceeded) {
-				backoffInterval *= 2
-			}
-			tick.Reset(backoffInterval)
-		} else if failing {
-			failing = false
+			failures++
+			backoff := pollingBackoff(failures, isPollingRateLimited(err))
+			log.Err(err).Dur("retry_in", backoff).Msg("Failed to poll for updates")
+			timer.Reset(backoff)
+			continue
+		} else if failures > 0 {
+			failures = 0
 			pc.client.eventHandler(&types.PollingError{}, nil)
-			backoffInterval = defaultPollingInterval / 2
-			tick.Reset(defaultPollingInterval)
 		}
+		timer.Reset(pc.nextInterval())
 	}
 }
 

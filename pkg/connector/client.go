@@ -80,6 +80,10 @@ func NewTwitterClient(login *bridgev2.UserLogin, connector *TwitterConnector, cl
 	client.SetXChatEventHandler(tc.HandleXChatEvent)
 	client.SetEventHandler(tc.HandlePollingEvent, tc.HandleStreamEvent, tc.HandleCursorChange)
 	client.SetConversationDataCallback(tc.HandleConversationDataRefresh)
+	client.SetPollingInterval(
+		time.Duration(connector.Config.PollingInterval.Min)*time.Second,
+		time.Duration(connector.Config.PollingInterval.Max)*time.Second,
+	)
 	client.SetXChatGapHandler(tc.catchupXChatConversationGap)
 	// Ensure current user ID is available even if cookies omit twid
 	client.SetCurrentUserID(ParseUserLoginID(login.ID))
@@ -345,6 +349,8 @@ func (tc *TwitterClient) connect(ctx context.Context) {
 	// for older history instead of eagerly walking every conversation here.
 	repairTruncatedItems := meta.MaxUserSequenceID != ""
 	var catchupResult xchatInboxCatchupResult
+	conversationLimit := xchatImportConversationLimit(meta, tc.connector.Config.ConversationSyncLimit)
+	importedConversations := 0
 	var resumeCursor, requestedCursor *payload.XChatCursor
 	retryDelay := time.Second
 	for {
@@ -358,6 +364,8 @@ func (tc *TwitterClient) connect(ctx context.Context) {
 			MaxSequenceID:      meta.MaxUserSequenceID,
 			MessagePullVersion: meta.MessagePullVersion,
 			Cursor:             cursor,
+			ConversationLimit:  conversationLimit,
+			Conversations:      importedConversations,
 		}, xchatInboxCatchupOps{
 			FetchInitial: func(ctx context.Context, variables *payload.GetInitialXChatPageQueryVariables) (response.XChatInboxPage, error) {
 				fetchLog.Info().
@@ -393,6 +401,7 @@ func (tc *TwitterClient) connect(ctx context.Context) {
 			},
 			Checkpoint: tc.saveXChatInboxCheckpoint,
 		})
+		importedConversations = catchupResult.Conversations
 		if err == nil {
 			break
 		}
@@ -620,6 +629,16 @@ func (tc *TwitterClient) syncOwnAvatarFromUser(ctx context.Context, user *types.
 	}
 	ownGhost.UpdateInfo(ctx, tc.connector.wrapUserInfo(tc.client, user))
 	return ownGhost.AvatarMXC
+}
+
+// xchatImportConversationLimit returns the conversation_sync_limit for a fresh
+// inbox import, and no limit (0) when the import catches up after a reconnect or
+// resumes a saved cursor: those must see every conversation that changed.
+func xchatImportConversationLimit(meta *UserLoginMetadata, configured int) int {
+	if meta.MaxUserSequenceID != "" || meta.XChatInboxCursor != nil {
+		return 0
+	}
+	return configured
 }
 
 func xchatInboxCursorFromMetadata(cursor *XChatInboxCursorData) *payload.XChatCursor {

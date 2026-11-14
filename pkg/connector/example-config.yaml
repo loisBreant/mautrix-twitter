@@ -8,8 +8,16 @@ get_proxy_url: null
 # {{ .Username }} is replaced with the username of the Twitter user.
 displayname_template: "{{ .DisplayName }} (Twitter)"
 
-# Maximum number of conversations to sync on startup
+# Maximum number of conversations to import when an account first logs in. X returns
+# conversations 20 at a time, so the import stops after the page that reaches the limit.
+# 0 or less imports every conversation. Reconnects always catch up on every conversation.
 conversation_sync_limit: 20
+
+# Seconds between two REST polls for legacy (non X Chat) message requests and chats,
+# which the X Chat websocket doesn't deliver. Each wait is drawn between min and max.
+polling_interval:
+    min: 60
+    max: 120
 
 # Should the bridge cache sessions instead of resyncing chats on every restart?
 cache_session: true

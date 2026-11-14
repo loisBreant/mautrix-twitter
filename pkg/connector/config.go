@@ -20,6 +20,11 @@ type Config struct {
 	ConversationSyncLimit int    `yaml:"conversation_sync_limit"`
 	CacheSession          bool   `yaml:"cache_session"`
 
+	PollingInterval struct {
+		Min int `yaml:"min"`
+		Max int `yaml:"max"`
+	} `yaml:"polling_interval"`
+
 	X bool `yaml:"x"`
 
 	LogRedactedLoginResponses bool `yaml:"log_redacted_login_responses"`
@@ -49,6 +54,8 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "displayname_template")
 	helper.Copy(up.Int, "conversation_sync_limit")
 	helper.Copy(up.Bool, "cache_session")
+	helper.Copy(up.Int, "polling_interval", "min")
+	helper.Copy(up.Int, "polling_interval", "max")
 	helper.Copy(up.Bool, "x")
 	helper.Copy(up.Bool, "log_redacted_login_responses")
 }

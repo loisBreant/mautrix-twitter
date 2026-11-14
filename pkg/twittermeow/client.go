@@ -251,6 +251,12 @@ func (c *Client) StartPolling(ctx context.Context) {
 	c.polling.startPolling(c.Logger.WithContext(ctx))
 }
 
+// SetPollingInterval sets the range the wait between two REST polls is drawn
+// from. Call it before StartPolling.
+func (c *Client) SetPollingInterval(minimum, maximum time.Duration) {
+	c.polling.setInterval(minimum, maximum)
+}
+
 // StopPolling stops the REST API polling.
 func (c *Client) StopPolling() {
 	c.polling.stopPolling()

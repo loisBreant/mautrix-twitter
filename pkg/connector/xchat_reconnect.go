@@ -27,6 +27,11 @@ type xchatInboxCatchupState struct {
 	MaxSequenceID      string
 	MessagePullVersion *int
 	Cursor             *payload.XChatCursor
+	// ConversationLimit stops the import after the page that brings the number of
+	// conversations to it. 0 or less imports every page.
+	ConversationLimit int
+	// Conversations counts the ones an earlier attempt of the same import fetched.
+	Conversations int
 }
 
 type xchatInboxCatchupResult struct {
@@ -34,6 +39,7 @@ type xchatInboxCatchupResult struct {
 	MessagePullVersion *int
 	Pages              int
 	Items              int
+	Conversations      int
 	CheckpointBlocked  bool
 }
 
@@ -80,6 +86,7 @@ func runXChatInboxCatchup(
 	result := xchatInboxCatchupResult{
 		MaxSequenceID:      state.MaxSequenceID,
 		MessagePullVersion: cloneXChatInt(state.MessagePullVersion),
+		Conversations:      state.Conversations,
 	}
 	cursor := cloneXChatCursor(state.Cursor)
 	pendingMaxSequenceID := result.MaxSequenceID
@@ -111,8 +118,22 @@ func runXChatInboxCatchup(
 		}
 		result.Pages++
 		result.Items += len(page.Items) + len(page.EncodedMessageEvents)
+		result.Conversations += len(page.Items)
 		result.CheckpointBlocked = processed.CheckpointBlocked
 		return nil
+	}
+
+	// Once the limit is reached, dropping the cursor ends the import and its
+	// checkpoint keeps the inbox's max sequence, so the next connect only catches
+	// up from there and older conversations stay unbridged until they get a message.
+	stopAtConversationLimit := func() {
+		if cursor != nil && state.ConversationLimit > 0 && result.Conversations >= state.ConversationLimit {
+			zerolog.Ctx(ctx).Info().
+				Int("conversations", result.Conversations).
+				Int("limit", state.ConversationLimit).
+				Msg("Stopping XChat inbox import at conversation_sync_limit")
+			cursor = nil
+		}
 	}
 
 	checkpoint := func() error {
@@ -148,6 +169,7 @@ func runXChatInboxCatchup(
 		if err != nil {
 			return result, fmt.Errorf("read initial XChat catch-up cursor: %w", err)
 		}
+		stopAtConversationLimit()
 		if err = checkpoint(); err != nil {
 			return result, fmt.Errorf("save initial XChat catch-up checkpoint: %w", err)
 		}
@@ -178,6 +200,7 @@ func runXChatInboxCatchup(
 			return result, fmt.Errorf("%w from %q", errXChatInboxCursorStalled, requestCursor.CursorId)
 		}
 		cursor = nextCursor
+		stopAtConversationLimit()
 		if err = checkpoint(); err != nil {
 			return result, fmt.Errorf("save XChat catch-up checkpoint: %w", err)
 		}
